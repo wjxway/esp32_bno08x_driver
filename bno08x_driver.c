@@ -1099,33 +1099,34 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
     switch (packet->body[5])
     {
     case SENSOR_REPORT_ID_ACCELEROMETER:
+        device->accel_timestamp_us = esp_timer_get_time();
         device->accel_accuracy = status;
         device->raw_accel_X = data1;
         device->raw_accel_Y = data2;
         device->raw_accel_Z = data3;
-        device->accel_timestamp_us = esp_timer_get_time();
         device->accel_update_count++;
         break;
 
     case SENSOR_REPORT_ID_LINEAR_ACCELERATION:
+        device->lin_accel_timestamp_us = esp_timer_get_time();
         device->accel_lin_accuracy = status;
         device->raw_lin_accel_X = data1;
         device->raw_lin_accel_Y = data2;
         device->raw_lin_accel_Z = data3;
-        device->lin_accel_timestamp_us = esp_timer_get_time();
         device->lin_accel_update_count++;
         break;
 
     case SENSOR_REPORT_ID_GYROSCOPE:
+        device->gyro_timestamp_us = esp_timer_get_time();
         device->gyro_accuracy = status;
         device->raw_gyro_X = data1;
         device->raw_gyro_Y = data2;
         device->raw_gyro_Z = data3;
-        device->gyro_timestamp_us = esp_timer_get_time();
         device->gyro_update_count++;
         break;
 
     case SENSOR_REPORT_ID_UNCALIBRATED_GYRO:
+        device->uncalib_gyro_timestamp_us = esp_timer_get_time();
         device->uncalib_gyro_accuracy = status;
         device->raw_uncalib_gyro_X = data1;
         device->raw_uncalib_gyro_Y = data2;
@@ -1133,69 +1134,68 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
         device->raw_bias_X = data4;
         device->raw_bias_Y = data5;
         device->raw_bias_Z = data6;
-        device->uncalib_gyro_timestamp_us = esp_timer_get_time();
         device->uncalib_gyro_update_count++;
         break;
 
     case SENSOR_REPORT_ID_MAGNETIC_FIELD:
+        device->magf_timestamp_us = esp_timer_get_time();
         device->magf_accuracy = status;
         device->raw_magf_X = data1;
         device->raw_magf_Y = data2;
         device->raw_magf_Z = data3;
-        device->magf_timestamp_us = esp_timer_get_time();
         device->magf_update_count++;
         break;
 
     case SENSOR_REPORT_ID_TAP_DETECTOR:
-        device->tap_detector = packet->body[5 + 4]; // Byte 4 only
         device->tap_detector_timestamp_us = esp_timer_get_time();
+        device->tap_detector = packet->body[5 + 4]; // Byte 4 only
         device->tap_detector_update_count++;
         break;
 
     case SENSOR_REPORT_ID_STEP_COUNTER:
-        device->step_count = data3; // Bytes 8/9
         device->step_count_timestamp_us = esp_timer_get_time();
+        device->step_count = data3; // Bytes 8/9
         device->step_count_update_count++;
         break;
 
     case SENSOR_REPORT_ID_STABILITY_CLASSIFIER:
-        device->stability_classifier = packet->body[5 + 4]; // Byte 4 only
         device->stability_timestamp_us = esp_timer_get_time();
+        device->stability_classifier = packet->body[5 + 4]; // Byte 4 only
         device->stability_update_count++;
         break;
 
     case SENSOR_REPORT_ID_PERSONAL_ACTIVITY_CLASSIFIER:
+        device->activity_timestamp_us = esp_timer_get_time();
         device->activity_classifier = packet->body[5 + 5]; // Most likely state
 
         // Load activity classification confidences into the array
         for (i = 0; i < 9; i++)                                        // Hardcoded to max of 9. TODO - bring in array size
             device->activity_confidences[i] = packet->body[5 + 6 + i]; // 5 bytes of timestamp, byte 6 is first confidence
         // byte
-        device->activity_timestamp_us = esp_timer_get_time();
         device->activity_update_count++;
         break;
 
     case SENSOR_REPORT_ID_RAW_ACCELEROMETER:
+        device->mems_raw_accel_timestamp_us = esp_timer_get_time();
         device->mems_raw_accel_X = data1;
         device->mems_raw_accel_Y = data2;
         device->mems_raw_accel_Z = data3;
-        device->mems_raw_accel_timestamp_us = esp_timer_get_time();
         device->mems_raw_accel_update_count++;
         break;
 
     case SENSOR_REPORT_ID_RAW_GYROSCOPE:
+        device->mems_raw_gyro_timestamp_us = esp_timer_get_time();
         device->mems_raw_gyro_X = data1;
         device->mems_raw_gyro_Y = data2;
         device->mems_raw_gyro_Z = data3;
-        device->mems_raw_gyro_timestamp_us = esp_timer_get_time();
         device->mems_raw_gyro_update_count++;
         break;
 
     case SENSOR_REPORT_ID_RAW_MAGNETOMETER:
+        device->mems_raw_magf_timestamp_us = esp_timer_get_time();
         device->mems_raw_magf_X = data1;
         device->mems_raw_magf_Y = data2;
         device->mems_raw_magf_Z = data3;
-        device->mems_raw_magf_timestamp_us = esp_timer_get_time();
         device->mems_raw_magf_update_count++;
         break;
 
@@ -1209,11 +1209,11 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
         break;
 
     case SENSOR_REPORT_ID_GRAVITY:
+        device->gravity_timestamp_us = esp_timer_get_time();
         device->gravity_accuracy = status;
         device->gravity_X = data1;
         device->gravity_Y = data2;
         device->gravity_Z = data3;
-        device->gravity_timestamp_us = esp_timer_get_time();
         device->gravity_update_count++;
         break;
 
@@ -1222,6 +1222,7 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
             packet->body[5] == SENSOR_REPORT_ID_ARVR_STABILIZED_ROTATION_VECTOR ||
             packet->body[5] == SENSOR_REPORT_ID_ARVR_STABILIZED_GAME_ROTATION_VECTOR)
         {
+            device->quat_timestamp_us = esp_timer_get_time();
             device->quat_accuracy = status;
             device->raw_quat_I = data1;
             device->raw_quat_J = data2;
@@ -1232,7 +1233,6 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
             //  not game rot vector and not ar/vr stabilized rotation vector
             device->raw_quat_radian_accuracy = data5;
 
-            device->quat_timestamp_us = esp_timer_get_time();
             device->quat_update_count++;
         }
         else
