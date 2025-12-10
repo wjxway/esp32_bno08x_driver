@@ -175,7 +175,7 @@ bool BNO08x_initialize(BNO08x *device)
     device->cb_list->length = 0;
 
     device->spi_task_hdl = NULL;
-    xTaskCreate(&BNO08x_spi_task, "bno08x_spi_task", 4096, (void *)device, 8, &(device->spi_task_hdl)); // launch SPI task (data processing merged in)
+    xTaskCreate(&BNO08x_spi_task, "bno08x_spi_task", 4096, (void *)device, device->imu_config.task_priority, &(device->spi_task_hdl)); // launch SPI task (data processing merged in)
 
     if (!BNO08x_hard_reset(device))
         return false;

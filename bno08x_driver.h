@@ -105,6 +105,7 @@ typedef struct
     gpio_num_t io_wake;
     uint32_t sclk_speed;
     uint8_t cpu_spi_intr_affinity;
+    uint32_t task_priority;
 } BNO08x_config_t;
 
 /// @brief Holds data that is sent over spi.
