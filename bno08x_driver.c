@@ -28,10 +28,42 @@ void BNO08x_init(BNO08x *device, BNO08x_config_t *imu_config)
     device->evt_grp_spi = xEventGroupCreate();
     device->evt_grp_report_en = xEventGroupCreate();
     device->queue_tx_data = xQueueCreate(1, sizeof(bno08x_tx_packet_t));
-    device->queue_rx_data = xQueueCreate(1, sizeof(bno08x_rx_packet_t));
     device->queue_frs_read_data = xQueueCreate(1, RX_DATA_LENGTH * sizeof(uint8_t));
     device->queue_reset_reason = xQueueCreate(1, sizeof(uint32_t));
     device->calibration_status = 1;
+
+    // Initialize all timestamps to 0
+    device->quat_timestamp_us = 0;
+    device->accel_timestamp_us = 0;
+    device->lin_accel_timestamp_us = 0;
+    device->gyro_timestamp_us = 0;
+    device->uncalib_gyro_timestamp_us = 0;
+    device->magf_timestamp_us = 0;
+    device->gravity_timestamp_us = 0;
+    device->tap_detector_timestamp_us = 0;
+    device->step_count_timestamp_us = 0;
+    device->stability_timestamp_us = 0;
+    device->activity_timestamp_us = 0;
+    device->mems_raw_accel_timestamp_us = 0;
+    device->mems_raw_gyro_timestamp_us = 0;
+    device->mems_raw_magf_timestamp_us = 0;
+
+    // Initialize update counters
+    device->quat_update_count = 0;
+    device->accel_update_count = 0;
+    device->lin_accel_update_count = 0;
+    device->gyro_update_count = 0;
+    device->uncalib_gyro_update_count = 0;
+    device->magf_update_count = 0;
+    device->gravity_update_count = 0;
+    device->tap_detector_update_count = 0;
+    device->step_count_update_count = 0;
+    device->stability_update_count = 0;
+    device->activity_update_count = 0;
+    device->mems_raw_accel_update_count = 0;
+    device->mems_raw_gyro_update_count = 0;
+    device->mems_raw_magf_update_count = 0;
+    device->last_rate_print_time_us = 0;
 
     // SPI bus config
     device->bus_config.mosi_io_num = imu_config->io_mosi; // assign mosi gpio pin
@@ -39,7 +71,7 @@ void BNO08x_init(BNO08x *device, BNO08x_config_t *imu_config)
     device->bus_config.sclk_io_num = imu_config->io_sclk; // assign sclk gpio pin
     device->bus_config.quadhd_io_num = -1;                // hold signal gpio (not used)
     device->bus_config.quadwp_io_num = -1;                // write protect signal gpio (not used)
-    device->bus_config.isr_cpu_id = (esp_intr_cpu_affinity_t)device->imu_config.cpu_spi_intr_affinity;
+    // device->bus_config.isr_cpu_id = (esp_intr_cpu_affinity_t)device->imu_config.cpu_spi_intr_affinity; // assign cpu affinity for spi isr, not used
 
     // SPI slave device specific config
     device->imu_spi_config.mode = 0x3; // set mode to 3 as per BNO08x datasheet (CPHA second edge, CPOL bus high when idle)
@@ -56,8 +88,8 @@ void BNO08x_init(BNO08x *device, BNO08x_config_t *imu_config)
     device->imu_spi_config.command_bits = 0;                        // 0 command bits, not using this system
     device->imu_spi_config.spics_io_num = -1;                       // due to esp32 silicon issue, chip select cannot be used with full-duplex mode
     // driver, it must be handled via calls to gpio pins
-    device->imu_spi_config.queue_size = 5;                          // only allow for 5 queued transactions at a timed
-    device->imu_spi_config.clock_source = SPI_CLK_SRC_DEFAULT;
+    device->imu_spi_config.queue_size = 5; // only allow for 5 queued transactions at a timed
+    // device->imu_spi_config.clock_source = SPI_CLK_SRC_DEFAULT; // not used
     // device->bus_config.data5_io_num = -1;                           // octal mode not used
     // SPI non-driver-controlled GPIO config
     // configure outputs
@@ -99,7 +131,13 @@ void BNO08x_init(BNO08x *device, BNO08x_config_t *imu_config)
     gpio_intr_disable(imu_config->io_int); // disable interrupts initially before reset
 
     // initialize the spi peripheral
-    spi_bus_initialize(imu_config->spi_peripheral, &(device->bus_config), SPI_DMA_CH_AUTO);
+    // Note: If the bus is already initialized (e.g., by DWM1000), this will return ESP_ERR_INVALID_STATE which is OK
+    esp_err_t spi_ret = spi_bus_initialize(imu_config->spi_peripheral, &(device->bus_config), SPI_DMA_CH_AUTO);
+    if (spi_ret != ESP_OK && spi_ret != ESP_ERR_INVALID_STATE)
+    {
+        ESP_LOGE(TAG, "Failed to initialize SPI bus: %s", esp_err_to_name(spi_ret));
+    }
+
     // add the imu device to the bus
     spi_bus_add_device(imu_config->spi_peripheral, &(device->imu_spi_config), &(device->spi_hdl));
 
@@ -109,7 +147,12 @@ void BNO08x_init(BNO08x *device, BNO08x_config_t *imu_config)
     device->spi_transaction.tx_buffer = tx_buffer;
     device->spi_transaction.rx_buffer = NULL;
     device->spi_transaction.flags = 0;
+
+    spi_device_acquire_bus(device->spi_hdl, portMAX_DELAY);                   // acquire the SPI bus
+    gpio_set_level(device->imu_config.io_cs, 0);                              // assert chip select
     spi_device_polling_transmit(device->spi_hdl, &(device->spi_transaction)); // send data packet
+    gpio_set_level(device->imu_config.io_cs, 1);                              // de-assert chip select
+    spi_device_release_bus(device->spi_hdl);                                  // release the SPI bus
 }
 
 /**
@@ -132,9 +175,7 @@ bool BNO08x_initialize(BNO08x *device)
     device->cb_list->length = 0;
 
     device->spi_task_hdl = NULL;
-    device->data_proc_task_hdl = NULL;
-    xTaskCreate(&BNO08x_spi_task, "bno08x_spi_task", 4096, (void *)device, 8, &(device->spi_task_hdl));                                                    // launch SPI task
-    xTaskCreate(&BNO08x_data_proc_task, "bno08x_data_proc_task", CONFIG_ESP32_BNO08X_DATA_PROC_TASK_SZ, (void *)device, 7, &(device->data_proc_task_hdl)); // launch data proc task
+    xTaskCreate(&BNO08x_spi_task, "bno08x_spi_task", 4096, (void *)device, device->imu_config.task_priority, &(device->spi_task_hdl)); // launch SPI task (data processing merged in)
 
     if (!BNO08x_hard_reset(device))
         return false;
@@ -407,48 +448,54 @@ bool BNO08x_mode_sleep(BNO08x *device)
 /**
  * @brief Receives a SHTP packet via SPI.
  *
- * @return void, nothing to return
+ * @param packet_out Pointer to packet struct to store received data
+ * @return true if packet received successfully, false otherwise
  */
-bool BNO08x_receive_packet(BNO08x *device)
+bool BNO08x_receive_packet(BNO08x *device, bno08x_rx_packet_t *packet_out)
 {
-    bno08x_rx_packet_t packet;
     uint8_t dummy_header_tx[4] = {0};
 
     // setup transaction to receive first 4 bytes (packet header)
-    device->spi_transaction.rx_buffer = packet.header;
+    device->spi_transaction.rx_buffer = packet_out->header;
     device->spi_transaction.tx_buffer = dummy_header_tx;
     device->spi_transaction.length = 4 * 8;
     device->spi_transaction.rxlength = 4 * 8;
     device->spi_transaction.flags = 0;
 
-    gpio_set_level(device->imu_config.io_cs, 0);                              // assert chip select
+    spi_device_acquire_bus(device->spi_hdl, portMAX_DELAY); // acquire the SPI bus so the two transactions are back-to-back
+    gpio_set_level(device->imu_config.io_cs, 0);            // assert chip select
+
     spi_device_polling_transmit(device->spi_hdl, &(device->spi_transaction)); // receive first 4 bytes (packet header)
 
     // calculate length of packet from received header
-    packet.length = (((uint16_t)packet.header[1]) << 8) | ((uint16_t)packet.header[0]);
-    packet.length &= ~(1 << 15); // Clear the MSbit
+    packet_out->length = (((uint16_t)packet_out->header[1]) << 8) | ((uint16_t)packet_out->header[0]);
+    packet_out->length &= ~(1 << 15); // Clear the MSbit
 
 #ifdef CONFIG_ESP32_BNO08x_DEBUG_STATEMENTS
-    ESP_LOGW(TAG, "packet rx length: %d", packet.length);
+    ESP_LOGW(TAG, "packet rx length: %d", packet_out->length);
 #endif
 
-    if (packet.length == 0)
+    if (packet_out->length == 0)
+    {
+        gpio_set_level(device->imu_config.io_cs, 1); // de-assert chip select
+        spi_device_release_bus(device->spi_hdl);     // release the SPI bus
         return false;
+    }
 
-    packet.length -= 4; // remove 4 header bytes from packet length (we already read those)
+    packet_out->length -= 4; // remove 4 header bytes from packet length (we already read those)
 
     // setup transacton to read the data packet
-    device->spi_transaction.rx_buffer = packet.body;
+    device->spi_transaction.rx_buffer = packet_out->body;
     device->spi_transaction.tx_buffer = NULL;
-    device->spi_transaction.length = packet.length * 8;
-    device->spi_transaction.rxlength = packet.length * 8;
+    device->spi_transaction.length = packet_out->length * 8;
+    device->spi_transaction.rxlength = packet_out->length * 8;
     device->spi_transaction.flags = 0;
 
     spi_device_polling_transmit(device->spi_hdl, &(device->spi_transaction)); // receive rest of packet
 
     gpio_set_level(device->imu_config.io_cs, 1); // de-assert chip select
+    spi_device_release_bus(device->spi_hdl);     // release the SPI bus
 
-    xQueueSend(device->queue_rx_data, &packet, 0); // send received data to data_proc_task
     xEventGroupSetBits(device->evt_grp_spi, EVT_GRP_SPI_RX_DONE_BIT);
 
     return true;
@@ -494,10 +541,11 @@ void BNO08x_send_packet(BNO08x *device, bno08x_tx_packet_t *packet)
     device->spi_transaction.rx_buffer = NULL;
     device->spi_transaction.flags = 0;
 
+    spi_device_acquire_bus(device->spi_hdl, portMAX_DELAY);                   // acquire the SPI bus
     gpio_set_level(device->imu_config.io_cs, 0);                              // assert chip select
     spi_device_polling_transmit(device->spi_hdl, &(device->spi_transaction)); // send data packet
-
-    gpio_set_level(device->imu_config.io_cs, 1); // de-assert chip select
+    gpio_set_level(device->imu_config.io_cs, 1);                              // de-assert chip select
+    spi_device_release_bus(device->spi_hdl);                                  // release the SPI bus
 
     xEventGroupSetBits(device->evt_grp_spi, EVT_GRP_SPI_TX_DONE_BIT);
 }
@@ -868,10 +916,10 @@ bool BNO08x_register_cb(BNO08x *device, bno08x_cb_fxn_t cb_fxn)
     {
         callbacks_appended = (bno08x_cb_fxn_t *)realloc(device->cb_list->callbacks, (device->cb_list->length + 1) * sizeof(bno08x_cb_fxn_t));
 
-        if(callbacks_appended != NULL)
+        if (callbacks_appended != NULL)
         {
             callbacks_appended[device->cb_list->length] = cb_fxn;
-            
+
             device->cb_list->callbacks = callbacks_appended;
             device->cb_list->length++;
 
@@ -879,7 +927,7 @@ bool BNO08x_register_cb(BNO08x *device, bno08x_cb_fxn_t cb_fxn)
         }
     }
 
-    return false; 
+    return false;
 }
 
 uint16_t BNO08x_parse_packet(BNO08x *device, bno08x_rx_packet_t *packet)
@@ -1051,27 +1099,34 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
     switch (packet->body[5])
     {
     case SENSOR_REPORT_ID_ACCELEROMETER:
+        device->accel_timestamp_us = esp_timer_get_time();
         device->accel_accuracy = status;
         device->raw_accel_X = data1;
         device->raw_accel_Y = data2;
         device->raw_accel_Z = data3;
+        device->accel_update_count++;
         break;
 
     case SENSOR_REPORT_ID_LINEAR_ACCELERATION:
+        device->lin_accel_timestamp_us = esp_timer_get_time();
         device->accel_lin_accuracy = status;
         device->raw_lin_accel_X = data1;
         device->raw_lin_accel_Y = data2;
         device->raw_lin_accel_Z = data3;
+        device->lin_accel_update_count++;
         break;
 
     case SENSOR_REPORT_ID_GYROSCOPE:
+        device->gyro_timestamp_us = esp_timer_get_time();
         device->gyro_accuracy = status;
         device->raw_gyro_X = data1;
         device->raw_gyro_Y = data2;
         device->raw_gyro_Z = data3;
+        device->gyro_update_count++;
         break;
 
     case SENSOR_REPORT_ID_UNCALIBRATED_GYRO:
+        device->uncalib_gyro_timestamp_us = esp_timer_get_time();
         device->uncalib_gyro_accuracy = status;
         device->raw_uncalib_gyro_X = data1;
         device->raw_uncalib_gyro_Y = data2;
@@ -1079,52 +1134,69 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
         device->raw_bias_X = data4;
         device->raw_bias_Y = data5;
         device->raw_bias_Z = data6;
+        device->uncalib_gyro_update_count++;
         break;
 
     case SENSOR_REPORT_ID_MAGNETIC_FIELD:
+        device->magf_timestamp_us = esp_timer_get_time();
         device->magf_accuracy = status;
         device->raw_magf_X = data1;
         device->raw_magf_Y = data2;
         device->raw_magf_Z = data3;
+        device->magf_update_count++;
         break;
 
     case SENSOR_REPORT_ID_TAP_DETECTOR:
+        device->tap_detector_timestamp_us = esp_timer_get_time();
         device->tap_detector = packet->body[5 + 4]; // Byte 4 only
+        device->tap_detector_update_count++;
         break;
 
     case SENSOR_REPORT_ID_STEP_COUNTER:
+        device->step_count_timestamp_us = esp_timer_get_time();
         device->step_count = data3; // Bytes 8/9
+        device->step_count_update_count++;
         break;
 
     case SENSOR_REPORT_ID_STABILITY_CLASSIFIER:
+        device->stability_timestamp_us = esp_timer_get_time();
         device->stability_classifier = packet->body[5 + 4]; // Byte 4 only
+        device->stability_update_count++;
         break;
 
     case SENSOR_REPORT_ID_PERSONAL_ACTIVITY_CLASSIFIER:
+        device->activity_timestamp_us = esp_timer_get_time();
         device->activity_classifier = packet->body[5 + 5]; // Most likely state
 
         // Load activity classification confidences into the array
         for (i = 0; i < 9; i++)                                        // Hardcoded to max of 9. TODO - bring in array size
             device->activity_confidences[i] = packet->body[5 + 6 + i]; // 5 bytes of timestamp, byte 6 is first confidence
         // byte
+        device->activity_update_count++;
         break;
 
     case SENSOR_REPORT_ID_RAW_ACCELEROMETER:
+        device->mems_raw_accel_timestamp_us = esp_timer_get_time();
         device->mems_raw_accel_X = data1;
         device->mems_raw_accel_Y = data2;
         device->mems_raw_accel_Z = data3;
+        device->mems_raw_accel_update_count++;
         break;
 
     case SENSOR_REPORT_ID_RAW_GYROSCOPE:
+        device->mems_raw_gyro_timestamp_us = esp_timer_get_time();
         device->mems_raw_gyro_X = data1;
         device->mems_raw_gyro_Y = data2;
         device->mems_raw_gyro_Z = data3;
+        device->mems_raw_gyro_update_count++;
         break;
 
     case SENSOR_REPORT_ID_RAW_MAGNETOMETER:
+        device->mems_raw_magf_timestamp_us = esp_timer_get_time();
         device->mems_raw_magf_X = data1;
         device->mems_raw_magf_Y = data2;
         device->mems_raw_magf_Z = data3;
+        device->mems_raw_magf_update_count++;
         break;
 
     case SHTP_REPORT_COMMAND_RESPONSE:
@@ -1137,10 +1209,12 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
         break;
 
     case SENSOR_REPORT_ID_GRAVITY:
+        device->gravity_timestamp_us = esp_timer_get_time();
         device->gravity_accuracy = status;
         device->gravity_X = data1;
         device->gravity_Y = data2;
         device->gravity_Z = data3;
+        device->gravity_update_count++;
         break;
 
     default:
@@ -1148,6 +1222,7 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
             packet->body[5] == SENSOR_REPORT_ID_ARVR_STABILIZED_ROTATION_VECTOR ||
             packet->body[5] == SENSOR_REPORT_ID_ARVR_STABILIZED_GAME_ROTATION_VECTOR)
         {
+            device->quat_timestamp_us = esp_timer_get_time();
             device->quat_accuracy = status;
             device->raw_quat_I = data1;
             device->raw_quat_J = data2;
@@ -1157,6 +1232,8 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
             // Only available on rotation vector and ar/vr stabilized rotation vector,
             //  not game rot vector and not ar/vr stabilized rotation vector
             device->raw_quat_radian_accuracy = data5;
+
+            device->quat_update_count++;
         }
         else
         {
@@ -1169,6 +1246,7 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
     }
 
     // TODO additional feature reports may be strung together. Parse them all.
+    
     return packet->body[5];
 }
 
@@ -2765,7 +2843,10 @@ void BNO08x_queue_tare_command(BNO08x *device, uint8_t command, uint8_t axis, ui
 // }
 
 /**
- * @brief Task responsible for SPI transactions. Executed when HINT in is asserted by BNO08x
+ * @brief Task responsible for SPI transactions and data processing. Executed when HINT in is asserted by BNO08x
+ *
+ * This task merges the previous spi_task and data_proc_task for lower latency.
+ * It records the timestamp when data is received for accurate extrapolation.
  *
  * @return void, nothing to return
  */
@@ -2777,6 +2858,7 @@ void BNO08x_spi_task(void *arg)
 #endif
     BNO08x *device = (BNO08x *)arg;
     bno08x_tx_packet_t tx_packet;
+    bno08x_rx_packet_t rx_packet;
 
     while (1)
     {
@@ -2794,41 +2876,70 @@ void BNO08x_spi_task(void *arg)
 #endif
 
         if (xQueueReceive(device->queue_tx_data, &tx_packet, 0)) // check for queued packet to be sent, non blocking
-            BNO08x_send_packet(device, &tx_packet);              // send packet
-        else
-            BNO08x_receive_packet(device); // receive packet
-    }
-}
-
-void BNO08x_data_proc_task(void *arg)
-{
-    BNO08x *device = (BNO08x *)arg;
-    bno08x_rx_packet_t packet;
-
-    while (1)
-    {
-        if (xQueueReceive(device->queue_rx_data, &packet, portMAX_DELAY)) // receive packet from spi_task()
         {
-            if (BNO08x_parse_packet(device, &packet) != 0) // check if packet is valid
+            BNO08x_send_packet(device, &tx_packet); // send packet
+        }
+        else
+        {
+            // Receive packet and process immediately (merged data_proc_task)
+            if (BNO08x_receive_packet(device, &rx_packet))
             {
-                //execute callbacks
-                for(int i = 0; i < device->cb_list->length; i++)
-                {
-                    if(device->cb_list->callbacks[i] != NULL)
-                    {
-                        device->cb_list->callbacks[i]((void *)device); //call the callback and pass it the imu
-                    }
-                }
+                // Record timestamp immediately after receiving data - will be used in parse_packet
+                int64_t rx_time = esp_timer_get_time();
 
-                xEventGroupSetBits(device->evt_grp_spi, EVT_GRP_SPI_RX_VALID_PACKET_BIT);
-            }
-            else
-            {
-                xEventGroupSetBits(device->evt_grp_spi, EVT_GRP_SPI_RX_INVALID_PACKET_BIT);
+                if (BNO08x_parse_packet(device, &rx_packet) != 0) // check if packet is valid
+                {
+                    // Execute callbacks
+                    for (int i = 0; i < device->cb_list->length; i++)
+                    {
+                        if (device->cb_list->callbacks[i] != NULL)
+                        {
+                            device->cb_list->callbacks[i]((void *)device); // call the callback and pass it the imu
+                        }
+                    }
+
+                    xEventGroupSetBits(device->evt_grp_spi, EVT_GRP_SPI_RX_VALID_PACKET_BIT);
+                }
+                else
+                {
+                    xEventGroupSetBits(device->evt_grp_spi, EVT_GRP_SPI_RX_INVALID_PACKET_BIT);
+                }
             }
         }
     }
 }
+
+// Timestamp getter functions
+int64_t BNO08x_get_quat_timestamp_us(BNO08x *device) { return device->quat_timestamp_us; }
+int64_t BNO08x_get_accel_timestamp_us(BNO08x *device) { return device->accel_timestamp_us; }
+int64_t BNO08x_get_lin_accel_timestamp_us(BNO08x *device) { return device->lin_accel_timestamp_us; }
+int64_t BNO08x_get_gyro_timestamp_us(BNO08x *device) { return device->gyro_timestamp_us; }
+int64_t BNO08x_get_uncalib_gyro_timestamp_us(BNO08x *device) { return device->uncalib_gyro_timestamp_us; }
+int64_t BNO08x_get_magf_timestamp_us(BNO08x *device) { return device->magf_timestamp_us; }
+int64_t BNO08x_get_gravity_timestamp_us(BNO08x *device) { return device->gravity_timestamp_us; }
+int64_t BNO08x_get_tap_detector_timestamp_us(BNO08x *device) { return device->tap_detector_timestamp_us; }
+int64_t BNO08x_get_step_count_timestamp_us(BNO08x *device) { return device->step_count_timestamp_us; }
+int64_t BNO08x_get_stability_timestamp_us(BNO08x *device) { return device->stability_timestamp_us; }
+int64_t BNO08x_get_activity_timestamp_us(BNO08x *device) { return device->activity_timestamp_us; }
+int64_t BNO08x_get_mems_raw_accel_timestamp_us(BNO08x *device) { return device->mems_raw_accel_timestamp_us; }
+int64_t BNO08x_get_mems_raw_gyro_timestamp_us(BNO08x *device) { return device->mems_raw_gyro_timestamp_us; }
+int64_t BNO08x_get_mems_raw_magf_timestamp_us(BNO08x *device) { return device->mems_raw_magf_timestamp_us; }
+
+// Update count getters
+uint32_t BNO08x_get_quat_update_count(BNO08x *device) { return device->quat_update_count; }
+uint32_t BNO08x_get_accel_update_count(BNO08x *device) { return device->accel_update_count; }
+uint32_t BNO08x_get_lin_accel_update_count(BNO08x *device) { return device->lin_accel_update_count; }
+uint32_t BNO08x_get_gyro_update_count(BNO08x *device) { return device->gyro_update_count; }
+uint32_t BNO08x_get_uncalib_gyro_update_count(BNO08x *device) { return device->uncalib_gyro_update_count; }
+uint32_t BNO08x_get_magf_update_count(BNO08x *device) { return device->magf_update_count; }
+uint32_t BNO08x_get_gravity_update_count(BNO08x *device) { return device->gravity_update_count; }
+uint32_t BNO08x_get_tap_detector_update_count(BNO08x *device) { return device->tap_detector_update_count; }
+uint32_t BNO08x_get_step_count_update_count(BNO08x *device) { return device->step_count_update_count; }
+uint32_t BNO08x_get_stability_update_count(BNO08x *device) { return device->stability_update_count; }
+uint32_t BNO08x_get_activity_update_count(BNO08x *device) { return device->activity_update_count; }
+uint32_t BNO08x_get_mems_raw_accel_update_count(BNO08x *device) { return device->mems_raw_accel_update_count; }
+uint32_t BNO08x_get_mems_raw_gyro_update_count(BNO08x *device) { return device->mems_raw_gyro_update_count; }
+uint32_t BNO08x_get_mems_raw_magf_update_count(BNO08x *device) { return device->mems_raw_magf_update_count; }
 
 /**
  * @brief HINT interrupt service routine, handles falling edge of BNO08x HINT pin.

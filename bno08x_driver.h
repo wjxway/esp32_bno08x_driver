@@ -105,6 +105,7 @@ typedef struct
     gpio_num_t io_wake;
     uint32_t sclk_speed;
     uint8_t cpu_spi_intr_affinity;
+    uint32_t task_priority;
 } BNO08x_config_t;
 
 /// @brief Holds data that is sent over spi.
@@ -141,11 +142,9 @@ typedef struct
     BNO08x_config_t imu_config;
     
     TaskHandle_t spi_task_hdl;
-    TaskHandle_t data_proc_task_hdl;
     EventGroupHandle_t evt_grp_spi;
     EventGroupHandle_t evt_grp_report_en;
     QueueHandle_t queue_tx_data;
-    QueueHandle_t queue_rx_data;
     QueueHandle_t queue_frs_read_data;
     QueueHandle_t queue_reset_reason;
 
@@ -157,6 +156,41 @@ typedef struct
     spi_device_handle_t spi_hdl;
     spi_transaction_t spi_transaction;
 
+    // Individual timestamps for each sensor type (in microseconds from esp_timer)
+    int64_t quat_timestamp_us;              ///< Rotation vector timestamp
+    int64_t accel_timestamp_us;             ///< Accelerometer timestamp
+    int64_t lin_accel_timestamp_us;         ///< Linear accelerometer timestamp
+    int64_t gyro_timestamp_us;              ///< Gyroscope timestamp
+    int64_t uncalib_gyro_timestamp_us;      ///< Uncalibrated gyro timestamp
+    int64_t magf_timestamp_us;              ///< Magnetometer timestamp
+    int64_t gravity_timestamp_us;           ///< Gravity timestamp
+    int64_t tap_detector_timestamp_us;      ///< Tap detector timestamp
+    int64_t step_count_timestamp_us;        ///< Step counter timestamp
+    int64_t stability_timestamp_us;         ///< Stability classifier timestamp
+    int64_t activity_timestamp_us;          ///< Activity classifier timestamp
+    int64_t mems_raw_accel_timestamp_us;    ///< Raw accelerometer timestamp
+    int64_t mems_raw_gyro_timestamp_us;     ///< Raw gyroscope timestamp
+    int64_t mems_raw_magf_timestamp_us;     ///< Raw magnetometer timestamp
+    
+    // Update counters for each sensor type (increments on each new reading)
+    uint32_t quat_update_count;
+    uint32_t accel_update_count;
+    uint32_t lin_accel_update_count;
+    uint32_t gyro_update_count;
+    uint32_t uncalib_gyro_update_count;
+    uint32_t magf_update_count;
+    uint32_t gravity_update_count;
+    uint32_t tap_detector_update_count;
+    uint32_t step_count_update_count;
+    uint32_t stability_update_count;
+    uint32_t activity_update_count;
+    uint32_t mems_raw_accel_update_count;
+    uint32_t mems_raw_gyro_update_count;
+    uint32_t mems_raw_magf_update_count;
+    
+    // Rate monitoring
+    int64_t last_rate_print_time_us;        ///< Last time rates were printed
+    
     // Raw sensor values
     uint32_t time_stamp;
     uint16_t raw_accel_X, raw_accel_Y, raw_accel_Z, accel_accuracy;
@@ -343,7 +377,7 @@ bool BNO08x_wait_for_rx_done(BNO08x *device);
 bool BNO08x_wait_for_tx_done(BNO08x *device);
 bool BNO08x_wait_for_data(BNO08x *device);
 
-bool BNO08x_receive_packet(BNO08x *device);
+bool BNO08x_receive_packet(BNO08x *device, bno08x_rx_packet_t *packet_out);
 void BNO08x_send_packet(BNO08x *device, bno08x_tx_packet_t *packet);
 void BNO08x_queue_packet(BNO08x *device, uint8_t channel_number, uint8_t data_length, uint8_t *commands);
 void BNO08x_queue_command(BNO08x *device, uint8_t command, uint8_t *commands);
@@ -467,6 +501,43 @@ extern bool bno08x_isr_service_installed;
 // Function prototypes for ISR and task handling
 void IRAM_ATTR BNO08x_hint_handler(void *arg);
 void BNO08x_spi_task(void *arg);
-void BNO08x_data_proc_task(void *arg);
+
+// Get the timestamps when each sensor was last updated (in microseconds)
+int64_t BNO08x_get_quat_timestamp_us(BNO08x *device);
+int64_t BNO08x_get_accel_timestamp_us(BNO08x *device);
+int64_t BNO08x_get_lin_accel_timestamp_us(BNO08x *device);
+int64_t BNO08x_get_gyro_timestamp_us(BNO08x *device);
+int64_t BNO08x_get_uncalib_gyro_timestamp_us(BNO08x *device);
+int64_t BNO08x_get_magf_timestamp_us(BNO08x *device);
+int64_t BNO08x_get_gravity_timestamp_us(BNO08x *device);
+int64_t BNO08x_get_tap_detector_timestamp_us(BNO08x *device);
+int64_t BNO08x_get_step_count_timestamp_us(BNO08x *device);
+int64_t BNO08x_get_stability_timestamp_us(BNO08x *device);
+int64_t BNO08x_get_activity_timestamp_us(BNO08x *device);
+int64_t BNO08x_get_mems_raw_accel_timestamp_us(BNO08x *device);
+int64_t BNO08x_get_mems_raw_gyro_timestamp_us(BNO08x *device);
+int64_t BNO08x_get_mems_raw_magf_timestamp_us(BNO08x *device);
+
+// Get the update count for each sensor (increments on each new reading)
+// you can use this to check if new data has been received since the last read
+// you can also use this to build optimisitic lock loops like:
+// do {
+//    uint32_t count = BNO08x_get_accel_update_count(&imu);
+//    // read XYZ accel data & time here
+// } while (count != BNO08x_get_accel_update_count(&imu));
+uint32_t BNO08x_get_quat_update_count(BNO08x *device);
+uint32_t BNO08x_get_accel_update_count(BNO08x *device);
+uint32_t BNO08x_get_lin_accel_update_count(BNO08x *device);
+uint32_t BNO08x_get_gyro_update_count(BNO08x *device);
+uint32_t BNO08x_get_uncalib_gyro_update_count(BNO08x *device);
+uint32_t BNO08x_get_magf_update_count(BNO08x *device);
+uint32_t BNO08x_get_gravity_update_count(BNO08x *device);
+uint32_t BNO08x_get_tap_detector_update_count(BNO08x *device);
+uint32_t BNO08x_get_step_count_update_count(BNO08x *device);
+uint32_t BNO08x_get_stability_update_count(BNO08x *device);
+uint32_t BNO08x_get_activity_update_count(BNO08x *device);
+uint32_t BNO08x_get_mems_raw_accel_update_count(BNO08x *device);
+uint32_t BNO08x_get_mems_raw_gyro_update_count(BNO08x *device);
+uint32_t BNO08x_get_mems_raw_magf_update_count(BNO08x *device);
 
 #endif
