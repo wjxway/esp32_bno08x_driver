@@ -201,4 +201,9 @@ namespace IMUManager
         return is_initialized;
     }
 
+    void* GetIMUDevice()
+    {
+        return is_initialized ? (void*)&imu : NULL;
+    }
+
 } // namespace IMUManager

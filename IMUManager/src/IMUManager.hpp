@@ -87,6 +87,13 @@ namespace IMUManager
      */
     bool InitializedQ();
 
+    /**
+     * @brief Get pointer to BNO08x device for direct access
+     * @return Pointer to BNO08x device, or NULL if not initialized
+     * @warning Use with caution - direct manipulation of the device can lead to undefined behavior.
+     */
+    void* GetIMUDevice();
+
 } // namespace IMUManager
 
 #endif // IMUMANAGER_HPP
