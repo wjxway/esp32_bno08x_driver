@@ -10,6 +10,9 @@
 
 bool bno08x_isr_service_installed = false;
 
+// last INT trigger time for accurate sensor timing
+int64_t last_INT_time_us = 0;
+
 static const char *TAG = "imu[bno08x]";
 /**
  * @brief BNO08x imu constructor.
@@ -123,7 +126,7 @@ void BNO08x_init(BNO08x *device, BNO08x_config_t *imu_config)
     // check if GPIO ISR service has been installed (only has to be done once regardless of SPI slaves being used)
     if (!bno08x_isr_service_installed)
     {
-        gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1); // install isr service
+        gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1 | ESP_INTR_FLAG_IRAM); // install isr service
         bno08x_isr_service_installed = true;
     }
 
@@ -1099,7 +1102,7 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
     switch (packet->body[5])
     {
     case SENSOR_REPORT_ID_ACCELEROMETER:
-        device->accel_timestamp_us = esp_timer_get_time();
+        device->accel_timestamp_us = last_INT_time_us - device->time_stamp * 100; // delay timestamp in 100us increments
         device->accel_accuracy = status;
         device->raw_accel_X = data1;
         device->raw_accel_Y = data2;
@@ -1108,7 +1111,7 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
         break;
 
     case SENSOR_REPORT_ID_LINEAR_ACCELERATION:
-        device->lin_accel_timestamp_us = esp_timer_get_time();
+        device->lin_accel_timestamp_us = last_INT_time_us - device->time_stamp * 100;
         device->accel_lin_accuracy = status;
         device->raw_lin_accel_X = data1;
         device->raw_lin_accel_Y = data2;
@@ -1117,7 +1120,7 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
         break;
 
     case SENSOR_REPORT_ID_GYROSCOPE:
-        device->gyro_timestamp_us = esp_timer_get_time();
+        device->gyro_timestamp_us = last_INT_time_us - device->time_stamp * 100;
         device->gyro_accuracy = status;
         device->raw_gyro_X = data1;
         device->raw_gyro_Y = data2;
@@ -1126,7 +1129,7 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
         break;
 
     case SENSOR_REPORT_ID_UNCALIBRATED_GYRO:
-        device->uncalib_gyro_timestamp_us = esp_timer_get_time();
+        device->uncalib_gyro_timestamp_us = last_INT_time_us - device->time_stamp * 100;
         device->uncalib_gyro_accuracy = status;
         device->raw_uncalib_gyro_X = data1;
         device->raw_uncalib_gyro_Y = data2;
@@ -1138,7 +1141,7 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
         break;
 
     case SENSOR_REPORT_ID_MAGNETIC_FIELD:
-        device->magf_timestamp_us = esp_timer_get_time();
+        device->magf_timestamp_us = last_INT_time_us - device->time_stamp * 100;
         device->magf_accuracy = status;
         device->raw_magf_X = data1;
         device->raw_magf_Y = data2;
@@ -1147,25 +1150,25 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
         break;
 
     case SENSOR_REPORT_ID_TAP_DETECTOR:
-        device->tap_detector_timestamp_us = esp_timer_get_time();
+        device->tap_detector_timestamp_us = last_INT_time_us - device->time_stamp * 100;
         device->tap_detector = packet->body[5 + 4]; // Byte 4 only
         device->tap_detector_update_count++;
         break;
 
     case SENSOR_REPORT_ID_STEP_COUNTER:
-        device->step_count_timestamp_us = esp_timer_get_time();
+        device->step_count_timestamp_us = last_INT_time_us - device->time_stamp * 100;
         device->step_count = data3; // Bytes 8/9
         device->step_count_update_count++;
         break;
 
     case SENSOR_REPORT_ID_STABILITY_CLASSIFIER:
-        device->stability_timestamp_us = esp_timer_get_time();
+        device->stability_timestamp_us = last_INT_time_us - device->time_stamp * 100;
         device->stability_classifier = packet->body[5 + 4]; // Byte 4 only
         device->stability_update_count++;
         break;
 
     case SENSOR_REPORT_ID_PERSONAL_ACTIVITY_CLASSIFIER:
-        device->activity_timestamp_us = esp_timer_get_time();
+        device->activity_timestamp_us = last_INT_time_us - device->time_stamp * 100;
         device->activity_classifier = packet->body[5 + 5]; // Most likely state
 
         // Load activity classification confidences into the array
@@ -1176,7 +1179,7 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
         break;
 
     case SENSOR_REPORT_ID_RAW_ACCELEROMETER:
-        device->mems_raw_accel_timestamp_us = esp_timer_get_time();
+        device->mems_raw_accel_timestamp_us = last_INT_time_us - device->time_stamp * 100;
         device->mems_raw_accel_X = data1;
         device->mems_raw_accel_Y = data2;
         device->mems_raw_accel_Z = data3;
@@ -1184,7 +1187,7 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
         break;
 
     case SENSOR_REPORT_ID_RAW_GYROSCOPE:
-        device->mems_raw_gyro_timestamp_us = esp_timer_get_time();
+        device->mems_raw_gyro_timestamp_us = last_INT_time_us - device->time_stamp * 100;
         device->mems_raw_gyro_X = data1;
         device->mems_raw_gyro_Y = data2;
         device->mems_raw_gyro_Z = data3;
@@ -1192,7 +1195,7 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
         break;
 
     case SENSOR_REPORT_ID_RAW_MAGNETOMETER:
-        device->mems_raw_magf_timestamp_us = esp_timer_get_time();
+        device->mems_raw_magf_timestamp_us = last_INT_time_us - device->time_stamp * 100;
         device->mems_raw_magf_X = data1;
         device->mems_raw_magf_Y = data2;
         device->mems_raw_magf_Z = data3;
@@ -1209,7 +1212,7 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
         break;
 
     case SENSOR_REPORT_ID_GRAVITY:
-        device->gravity_timestamp_us = esp_timer_get_time();
+        device->gravity_timestamp_us = last_INT_time_us - device->time_stamp * 100;
         device->gravity_accuracy = status;
         device->gravity_X = data1;
         device->gravity_Y = data2;
@@ -1222,7 +1225,7 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
             packet->body[5] == SENSOR_REPORT_ID_ARVR_STABILIZED_ROTATION_VECTOR ||
             packet->body[5] == SENSOR_REPORT_ID_ARVR_STABILIZED_GAME_ROTATION_VECTOR)
         {
-            device->quat_timestamp_us = esp_timer_get_time();
+            device->quat_timestamp_us = last_INT_time_us - device->time_stamp * 100;
             device->quat_accuracy = status;
             device->raw_quat_I = data1;
             device->raw_quat_J = data2;
@@ -2953,6 +2956,8 @@ void IRAM_ATTR BNO08x_hint_handler(void *arg)
     BaseType_t xHighPriorityTaskWoken = pdFALSE;
     BNO08x *imu = (BNO08x *)arg; // cast argument received by gpio_isr_handler_add ("this" pointer to imu object
     // created by constructor call)
+
+    last_INT_time_us = esp_timer_get_time();
 
     gpio_intr_disable(imu->imu_config.io_int);                          // disable interrupts
     vTaskNotifyGiveFromISR(imu->spi_task_hdl, &xHighPriorityTaskWoken); // notify SPI task BNO08x is ready for
