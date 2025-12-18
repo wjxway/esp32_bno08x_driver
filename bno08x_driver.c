@@ -2887,9 +2887,6 @@ void BNO08x_spi_task(void *arg)
             // Receive packet and process immediately (merged data_proc_task)
             if (BNO08x_receive_packet(device, &rx_packet))
             {
-                // Record timestamp immediately after receiving data - will be used in parse_packet
-                int64_t rx_time = esp_timer_get_time();
-
                 if (BNO08x_parse_packet(device, &rx_packet) != 0) // check if packet is valid
                 {
                     // Execute callbacks
