@@ -1249,7 +1249,7 @@ uint16_t BNO08x_parse_input_report(BNO08x *device, bno08x_rx_packet_t *packet)
     }
 
     // TODO additional feature reports may be strung together. Parse them all.
-    
+
     return packet->body[5];
 }
 
@@ -2878,33 +2878,42 @@ void BNO08x_spi_task(void *arg)
         prev_time = current_time;
 #endif
 
-        if (xQueueReceive(device->queue_tx_data, &tx_packet, 0)) // check for queued packet to be sent, non blocking
-        {
-            BNO08x_send_packet(device, &tx_packet); // send packet
-        }
-        else
-        {
-            // Receive packet and process immediately (merged data_proc_task)
-            if (BNO08x_receive_packet(device, &rx_packet))
-            {
-                if (BNO08x_parse_packet(device, &rx_packet) != 0) // check if packet is valid
-                {
-                    // Execute callbacks
-                    for (int i = 0; i < device->cb_list->length; i++)
-                    {
-                        if (device->cb_list->callbacks[i] != NULL)
-                        {
-                            device->cb_list->callbacks[i]((void *)device); // call the callback and pass it the imu
-                        }
-                    }
+        const int max_continues = 3;
 
-                    xEventGroupSetBits(device->evt_grp_spi, EVT_GRP_SPI_RX_VALID_PACKET_BIT);
-                }
-                else
+        // loop until HINT goes low again
+        for (int i = 0; i < max_continues; i++) // limit to 3 transactions per HINT to avoid blocking other tasks for too long
+        {
+            if (xQueueReceive(device->queue_tx_data, &tx_packet, 0)) // check for queued packet to be sent, non blocking
+            {
+                BNO08x_send_packet(device, &tx_packet); // send packet
+            }
+            else
+            {
+                // Receive packet and process immediately (merged data_proc_task)
+                if (BNO08x_receive_packet(device, &rx_packet))
                 {
-                    xEventGroupSetBits(device->evt_grp_spi, EVT_GRP_SPI_RX_INVALID_PACKET_BIT);
+                    if (BNO08x_parse_packet(device, &rx_packet) != 0) // check if packet is valid
+                    {
+                        // Execute callbacks
+                        for (int i = 0; i < device->cb_list->length; i++)
+                        {
+                            if (device->cb_list->callbacks[i] != NULL)
+                            {
+                                device->cb_list->callbacks[i]((void *)device); // call the callback and pass it the imu
+                            }
+                        }
+
+                        xEventGroupSetBits(device->evt_grp_spi, EVT_GRP_SPI_RX_VALID_PACKET_BIT);
+                    }
+                    else
+                    {
+                        xEventGroupSetBits(device->evt_grp_spi, EVT_GRP_SPI_RX_INVALID_PACKET_BIT);
+                    }
                 }
             }
+
+            if (gpio_get_level(device->imu_config.io_int) == 1)
+                break; // exit immediately if HINT is high again
         }
     }
 }
